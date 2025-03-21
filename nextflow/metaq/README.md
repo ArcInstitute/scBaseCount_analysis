@@ -1,6 +1,8 @@
 
 # Usage
 
+Requires [`run_metaq`](https://github.com/ArcInstitute/run_metaq) to be in your `$PATH`.
+
 ```bash
 nextflow run main.nf \
   -profile slurm \
