@@ -6,7 +6,7 @@ params.output_dir = "${baseDir}/metaq"
 params.frequency = 0.25
 params.cpus = 4
 params.memory = '40G'
-params.queue = 'gpu_high_mem'  // Default queue/partition
+params.queue = 'gpu_batch_high_mem,gpu_high_mem,gpu_batch,preemptible,gpu'  // Default queue/partition
 
 // Print parameter information
 log.info """\
@@ -44,6 +44,7 @@ process processH5ad {
     cpus params.cpus
     memory params.memory
     queue params.queue
+    clusterOptions '--gpus=1'
     
     // Error strategy - retry on error up to 3 times
     errorStrategy { task.attempt <= 3 ? 'retry' : 'finish' }
