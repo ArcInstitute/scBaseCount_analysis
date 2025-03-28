@@ -94,7 +94,6 @@ workflow {
             def fields = line.trim().split('\t')
             return tuple(fields[0], fields[1])
         }
-        .take(4)
     
     // Process each dataset
     processH5ad(datasets)
