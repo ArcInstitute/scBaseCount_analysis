@@ -1,12 +1,16 @@
 #!/usr/bin/env nextflow
 
 // Define parameters
-params.input_dir = "${baseDir}/GeneFull_Ex50pAS/GeneFull_Ex50pAS"
-params.output_dir = "${baseDir}/metaq"
+params.base_dir = "/large_storage/ctc/public/scBasecamp"
+params.input_dir = "${params.base_dir}/GeneFull_Ex50pAS/GeneFull_Ex50pAS"
+params.output_dir = "${params.base_dir}/metaq"
 params.frequency = 0.2
+params.min_genes = 300
+params.min_umis = 500
 params.cpus = 4
 params.memory = '40G'
 params.queue = 'gpu_batch_high_mem,gpu_high_mem,gpu_batch,preemptible,gpu'  // Default queue/partition
+params.tsv_file = "${params.base_dir}/meta_analysis/passing_datasets.tsv"
 
 // Print parameter information
 log.info """\
@@ -14,31 +18,35 @@ log.info """\
          ===========================
          Input directory : ${params.input_dir}
          Output directory: ${params.output_dir}
+         TSV File        : ${params.tsv_file}
          Meta Frequency  : ${params.frequency}
+         Minimum Genes   : ${params.min_genes}
+         Minimum UMIs    : ${params.min_umis}
          CPUs            : ${params.cpus}
          Memory          : ${params.memory}
          Queue/Partition : ${params.queue}
          """
          .stripIndent()
 
-// Process to find all h5ad files and create a channel
-process findH5adFiles {
-
+// Process to read the TSV file and create a channel of datasets to process
+process readTsvFile {
     executor 'local'
     cpus 1
-
+    
     output:
-    path 'file_list.txt', emit: file_list
-
+    path 'datasets_to_process.txt', emit: datasets_list
+    
     script:
     """
-    find ${params.input_dir} -name "*.h5ad" > file_list.txt
+    #!/usr/bin/env bash
+    # Read the TSV file and create a list of SRX accessions with their species
+    tail -n +2 ${params.tsv_file} | awk '{print \$1"\\t"\$2}' > datasets_to_process.txt
     """
 }
 
-// Process each h5ad file
+// Process each dataset in the TSV
 process processH5ad {
-    tag { h5ad_file }
+    tag { "${species}/${accession}" }
 
     // Resource requirements for the HPC
     cpus params.cpus
@@ -51,46 +59,50 @@ process processH5ad {
     maxRetries 3
 
     input:
-    val h5ad_file
+    tuple val(species), val(accession)
 
     output:
-    val "${h5ad_file}", emit: processed_file
+    tuple val(species), val(accession), emit: processed_dataset
 
     script:
-    // Extract species from the file path
-    // Assuming path structure like /path/to/GeneFull_Ex50pAS/GeneFull_Ex50pAS/Homo_sapiens/file.h5ad
-    def species = h5ad_file.toString().split('/')[-2]
-
-    // Extract basename
-    def basename = h5ad_file.toString().split('/')[-1]
-
-    // Create output directory if it doesn't exist
+    // Construct the h5ad file path based on species and accession
+    def h5ad_file = "${params.input_dir}/${species}/${accession}.h5ad"
+    
     """
+    # Create output directory if it doesn't exist
     mkdir -p ${params.output_dir}/${species}
-
+    
     # Run the metaq command
-    run_metaq -i ${h5ad_file} -o ${params.output_dir}/${species}/${basename} -f ${params.frequency}
+    run_metaq \
+        -i ${h5ad_file} \
+        -o ${params.output_dir}/${species}/${accession}.h5ad \
+        --min_genes ${params.min_genes} \
+        --min_umi ${params.min_umis} \
+        --frac_metacells ${params.frequency};
     """
 }
 
 // Main workflow
 workflow {
-    // Find all h5ad files
-    findH5adFiles()
-
-    // Convert file list to a channel of individual file paths
-    h5ad_files = findH5adFiles.out.file_list
+    // Read the TSV file
+    readTsvFile()
+    
+    // Convert TSV data to a channel of tuples (species, accession)
+    datasets = readTsvFile.out.datasets_list
         .splitText()
-        .map { it.trim() }
-        .filter { it.endsWith('.h5ad') }
-
-    // Process each h5ad file
-    processH5ad(h5ad_files)
-
+        .map { line -> 
+            def fields = line.trim().split('\t')
+            return tuple(fields[0], fields[1])
+        }
+        .take(4)
+    
+    // Process each dataset
+    processH5ad(datasets)
+    
     // Summary of processed files
-    processH5ad.out.processed_file
+    processH5ad.out.processed_dataset
         .collect()
-        .view { processed_files ->
-            "\nProcessing complete. Processed ${processed_files.size()} files.\n"
+        .view { processed_datasets ->
+            "\nProcessing complete. Processed ${processed_datasets.size()} datasets.\n"
         }
 }
