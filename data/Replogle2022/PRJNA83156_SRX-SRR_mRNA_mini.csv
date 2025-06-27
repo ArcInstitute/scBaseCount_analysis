@@ -1,0 +1,13 @@
+exp_name,sample,accession,lane,organism
+KD6_seq1_essential_mRNA_lane_1_S49,SRX15390082,SRR19330645,L004,Homo sapiens
+KD6_seq1_essential_mRNA_lane_1_S49,SRX15390082,SRR19330644,L001,Homo sapiens
+KD6_seq1_essential_mRNA_lane_1_S49,SRX15390082,SRR19330566,L003,Homo sapiens
+KD6_seq1_essential_mRNA_lane_1_S49,SRX15390082,SRR19331148,L002,Homo sapiens
+KD6_seq1_essential_mRNA_lane_9_S33,SRX15390085,SRR19330642,L004,Homo sapiens
+KD6_seq1_essential_mRNA_lane_9_S33,SRX15390085,SRR19330641,L003,Homo sapiens
+KD6_seq1_essential_mRNA_lane_9_S33,SRX15390085,SRR19330640,L002,Homo sapiens
+KD6_seq1_essential_mRNA_lane_9_S33,SRX15390085,SRR19330639,L001,Homo sapiens
+KD6_seq1_essential_mRNA_lane_10_S58,SRX15390093,SRR19330634,L001,Homo sapiens
+KD6_seq1_essential_mRNA_lane_10_S58,SRX15390093,SRR19330633,L003,Homo sapiens
+KD6_seq1_essential_mRNA_lane_10_S58,SRX15390093,SRR19330631,L002,Homo sapiens
+KD6_seq1_essential_mRNA_lane_10_S58,SRX15390093,SRR19330630,L004,Homo sapiens
