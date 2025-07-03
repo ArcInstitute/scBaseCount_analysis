@@ -29,17 +29,16 @@ summarize them into a single table. The script recursively searches for
 Summary.csv files in the STAR output directory structure and concatenates
 them into a single table. The table is then written to a file and upserted
 into the database.
+Dealing with datasets that do not have an SRA experiment accession.
 """
 parser = argparse.ArgumentParser(
     description=desc, epilog=epi, formatter_class=CustomFormatter
 )
 parser.add_argument('--samples-table', type=str, default=None,
                     help='Table of data. Required columns: [accession, feature, path]. path must be path to Summary.csv')
-parser.add_argument('--input-dir', type=str, default=None,
-                    help='Root directory containing STAR output directories')
 parser.add_argument('--sample', type=str, default="",
                     help='Sample name (optional)')
-parser.add_argument('--outfile', type=str, default="combined.csv",
+parser.add_argument('--outfile', type=str, default="combined-noSRX.csv",
                     help='Output file')
 parser.add_argument('--skip-database', action='store_true',
                     help='Skip updating the scRecounter SQL database')
@@ -53,6 +52,36 @@ parser.add_argument('--max-datasets', type=int, default=None,
                     help='Maximum number of datasets to process')
 parser.add_argument('--ignore-missing', action='store_true',
                     help='Ignore accessions with missing files/directories and continue processing')
+parser.add_argument('--database', type=str, default=None,
+                    choices=["sra", "geo"],
+                    help='NCBI database to use')
+parser.add_argument('--is-illumina', type=str, default=None,
+                    choices=["yes", "no"],
+                    help='Is Illumina sequencing (yes/no)')
+parser.add_argument('--is-single-cell', type=str, default=None,
+                    choices=["yes", "no"],
+                    help='Is single cell (yes/no)')
+parser.add_argument('--is-paired-end', type=str, default=None,
+                    choices=["yes", "no"],
+                    help='Is paired end (yes/no)')
+parser.add_argument('--lib-prep', type=str, default=None,
+                    help='Library preparation method')
+parser.add_argument('--tech-10x', type=str, default=None,
+                    help='10x Genomics technology')
+parser.add_argument('--cell-prep', type=str, default=None,
+                    help='Cell preparation method')
+parser.add_argument('--organism', type=str, default=None,
+                    help='Organism name')
+parser.add_argument('--tissue', type=str, default=None,
+                    help='Tissue type')
+parser.add_argument('--tissue-ontology-term-id', type=str, default=None,
+                    help='Tissue ontology term ID')
+parser.add_argument('--czi-collection-name', type=str, default=None,
+                    help='CZI collection name')
+parser.add_argument('--czi-collection-id', type=str, default=None,
+                    help='CZI collection ID')
+parser.add_argument('--notes', type=str, default=None,
+                    help='Additional notes')
 
 # functions
 def find_summary_files(root_dir: str, max_datasets: int = None, ignore_missing: bool = False) -> pd.DataFrame:
@@ -82,19 +111,19 @@ def find_summary_files(root_dir: str, max_datasets: int = None, ignore_missing: 
         path_parts = summary_file.parts
         
         # Find SRX accession (starts with SRX)
-        srx_accession = None
+        sample_name = None
         feature_type = None
         
         for i, part in enumerate(path_parts):
             if part.startswith('SRX'):
-                srx_accession = part
+                sample_name = part
                 # Feature type is the parent directory of Summary.csv
                 feature_type = summary_file.parent.name
                 break
         
-        if srx_accession and feature_type:
-            summary_files.append((srx_accession, feature_type, str(summary_file)))
-            logging.info(f"Found: {srx_accession}/{feature_type}/Summary.csv")
+        if sample_name and feature_type:
+            summary_files.append((sample_name, feature_type, str(summary_file)))
+            logging.info(f"Found: {sample_name}/{feature_type}/Summary.csv")
         else:
             logging.warning(f"Could not extract SRX/feature from path: {summary_file}")
 
@@ -103,7 +132,7 @@ def find_summary_files(root_dir: str, max_datasets: int = None, ignore_missing: 
             break
 
     # convert to dataframe
-    summary_files = pd.DataFrame(summary_files, columns=["accession", "feature", "path"])
+    summary_files = pd.DataFrame(summary_files, columns=["sample_name", "feature", "path"])
     return summary_files
     
 def check_matrix_files_exist(base_dir: str, feature: str, processing: str, ignore_missing: bool = False) -> bool:
@@ -133,15 +162,16 @@ def check_matrix_files_exist(base_dir: str, feature: str, processing: str, ignor
         elif processing == "filtered":
             target_files = [
                 "spliced.mtx.gz", "unspliced.mtx.gz", "ambiguous.mtx.gz", 
-                "barcodes.tsv.gz", "features.tsv.gz",
-                "UniqueAndMult-EM.mtx.gz", "UniqueAndMult-Uniform.mtx.gz"
+                "barcodes.tsv.gz", "features.tsv.gz"
             ]
         else:
             raise ValueError(f"Invalid processing: {processing}")
     else:
         target_files = [
-            "matrix.mtx.gz", "barcodes.tsv.gz", "features.tsv.gz", "UniqueAndMult-EM.mtx.gz", "UniqueAndMult-Uniform.mtx.gz"
+            "matrix.mtx.gz", "barcodes.tsv.gz", "features.tsv.gz"
         ]
+        if processing == "raw":
+            target_files += ["UniqueAndMult-EM.mtx.gz", "UniqueAndMult-Uniform.mtx.gz"]
     
     for file in target_files:
         file_path = os.path.join(base_dir, file)
@@ -157,28 +187,28 @@ def get_matrix_dirs(summary_files: pd.DataFrame, ignore_missing: bool = False) -
     """
     Find all matrix directories in the directory structure.
     Args:
-        summary_files: DataFrame with columns: [accession, feature, path]
-        ignore_missing: If True, skip accessions with missing files/directories
+        summary_files: DataFrame with columns: [sample_name, feature, path]
+        ignore_missing: If True, skip samples with missing files/directories
     Returns:
-        DataFrame with columns: [accession, feature, processing, path]
+        DataFrame with columns: [sample_name, feature, processing, path]
     """
     matrix_files = []
     for i,row in summary_files.iterrows():
         parts = str(row["path"]).split("/")
-        accession = parts[5]
+        sample_name = parts[5]
         feature = parts[7]
         # get the raw and filtered directories
         raw_dir = "/" + os.path.join(*parts[:8], "raw")
         filt_dir = "/" + os.path.join(*parts[:8], "filtered")
         if (check_matrix_files_exist(raw_dir, feature, "raw", ignore_missing) and 
             check_matrix_files_exist(filt_dir, feature, "filtered", ignore_missing)):
-            matrix_files.append((accession, feature, "raw", raw_dir))
-            matrix_files.append((accession, feature, "filtered", filt_dir))
+            matrix_files.append((sample_name, feature, "raw", raw_dir))
+            matrix_files.append((sample_name, feature, "filtered", filt_dir))
         elif ignore_missing:
-            logging.warning(f"Skipping raw/filtered matrix files for {accession}/{feature} due to missing files")
+            logging.warning(f"Skipping raw/filtered matrix files for {sample_name}/{feature} due to missing files")
             continue
     
-    return pd.DataFrame(matrix_files, columns=["accession", "feature", "processing", "path"])
+    return pd.DataFrame(matrix_files, columns=["sample_name", "feature", "processing", "path"])
 
 def upload_to_gcp_bucket(matrix_files: pd.DataFrame, summary_files: pd.DataFrame, gcp_bucket: str) -> str:
     """
@@ -254,6 +284,39 @@ def upload_to_gcp_bucket(matrix_files: pd.DataFrame, summary_files: pd.DataFrame
     logging.info(f"Upload batch SCRECOUNTER_{timestamp} completed")
     return f"SCRECOUNTER_{timestamp}"
 
+def create_metadata_dataframe(accessions: List[str], args) -> pd.DataFrame:
+    """
+    Create metadata dataframe from command line arguments for each accession.
+    Args:
+        accessions: List of accession IDs to create metadata for
+        args: Command line arguments containing metadata parameters
+    Returns:
+        DataFrame with metadata for each accession
+    """
+    metadata_rows = []
+    
+    for accession in accessions:
+        metadata = {
+            'database': args.database,
+            'srx_accession': accession,
+            'is_illumina': args.is_illumina,
+            'is_single_cell': args.is_single_cell,
+            'is_paired_end': args.is_paired_end,
+            'lib_prep': args.lib_prep,
+            'tech_10x': args.tech_10x,
+            'cell_prep': args.cell_prep,
+            'organism': args.organism,
+            'tissue': args.tissue,
+            'tissue_ontology_term_id': args.tissue_ontology_term_id,
+            'czi_collection_name': args.czi_collection_name,
+            'czi_collection_id': args.czi_collection_id,
+            'notes': args.notes
+        }
+        metadata_rows.append(metadata)
+    
+    metadata_df = pd.DataFrame(metadata_rows)
+    return metadata_df
+
 def main(args):
     # set pandas display options
     pd.set_option('display.max_columns', 50)
@@ -272,7 +335,7 @@ def main(args):
     # if summary table provided, read in
     if args.samples_table:
         summary_files = pd.read_csv(args.samples_table)
-        req_cols = ["accession", "feature", "path"]
+        req_cols = ["accession", "feature", "path", "sample_name"]
         missing_cols = [col for col in req_cols if col not in summary_files.columns]
         if missing_cols:
             logging.error(f"Missing required columns in samples table: {missing_cols}")
@@ -293,7 +356,7 @@ def main(args):
     # find associated matrix files
     matrix_files = get_matrix_dirs(summary_files, args.ignore_missing)
     logging.info(f"Found {len(matrix_files)} matrix files")
-    logging.info(f"Number of accessions: {matrix_files['accession'].nunique()}")
+    logging.info(f"Number of samples: {matrix_files['sample_name'].nunique()}")
 
     # read in all summary csv files and concatenate
     logging.info("Reading in Summary.csv files...")
@@ -333,11 +396,14 @@ def main(args):
     df = pd.concat(df, ignore_index=True)
     logging.info(f"Number of rows in the raw table: {df.shape[0]}")
 
+    # format matrix files data.frame
+    matrix_files = matrix_files.merge(summary_files[["sample_name", "accession"]], on="sample_name", how="inner")
+
     # filter to accessions (samples) in matrix_files
     df = df[df["sample"].isin(matrix_files["accession"])]
 
     # filter summary_files data.frame to only include accessions in df
-    #summary_files = summary_files[summary_files["accession"].isin(df["sample"])]
+    summary_files = summary_files[summary_files["accession"].isin(df["sample"])]
     
     # status
     logging.info(f"Number of rows in the matrix-filtered table: {df.shape[0]}")
@@ -381,6 +447,30 @@ def main(args):
         logging.info("Updating screcounter_star_results...")
         with db_connect() as conn:
             db_upsert(df, "screcounter_star_results", conn)
+        
+        # create and upload metadata if any metadata parameters are provided
+        metadata_params = [
+            args.database, args.is_illumina, args.is_single_cell, args.is_paired_end, 
+            args.lib_prep, args.tech_10x, args.cell_prep, args.organism, 
+            args.tissue, args.tissue_ontology_term_id, args.czi_collection_name,
+            args.czi_collection_id, args.notes
+        ]
+        
+        if any(param is not None for param in metadata_params):
+            logging.info("Creating metadata dataframe...")
+            unique_accessions = df['sample'].unique().tolist()
+            metadata_df = create_metadata_dataframe(unique_accessions, args)
+
+            # add entrez ID
+            metadata_df["entrez_id"] = metadata_df["srx_accession"].apply(lambda x: '1' + x.lstrip("ARC"))
+            
+            logging.info("Updating srx_metadata...")
+            logging.info(f"Metadata rows to upload: {len(metadata_df)}")
+            with db_connect() as conn:
+                db_upsert(metadata_df, "srx_metadata", conn)
+        else:
+            logging.info("No metadata parameters provided, skipping srx_metadata update")
+    
     logging.info("Done!")
 
 ## script main
@@ -390,4 +480,5 @@ if __name__ == '__main__':
     load_dotenv(override=True)
     main(args)
 
+    
     

@@ -346,6 +346,6 @@ SELECT * FROM "srx_metadata" WHERE "srx_accession" IN (SELECT DISTINCT "sample" 
 # main
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
     with db_connect() as conn:
         print(get_srx_metadata_limit5(conn))
