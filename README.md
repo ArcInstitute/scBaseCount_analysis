@@ -19,6 +19,34 @@ Analysis Code for scBaseCount
 * April to June 2025
 * Combined `prod3` and `prod4`
 
+## Chris' datasets
+
+* Datasets with SRA experiment accession:
+  * `/processed_datasets/scRecount/cellxgene/counted_SRXs/`
+* Datasets lacking an SRA experiment accession:
+  * `/processed_datasets/scRecount/cellxgene/`
+    * `marmoset_brain_cell_atlas`, `AIDB`, `brain_cell_atlas`, `neocortex_atlas`
+
+
+### AIDB:
+* technology: 10x 5' v2
+* Organism: Home sapiens
+* CZI_collection_name: 'Asian immune diversity atlas'
+* tissue: Blood
+
+### neocortex_atlas:
+* technology: 10x 3' v2
+* Organism: Human
+* CZI collection name: not a specific collection, but comes from BRAIN Initiative
+* tissue: neocortex
+
+### marmoset_brain_cell_atlas:
+* technology: 10x3' v2
+* Organism: Callithrix jacchus
+* CZI collection name: A marmoset brain cell census reveals influence of developmental origin and functional class on neuronal identity
+* tissue: brain
+
+
 ### SRAgent stats
 
 * No. of SRA experiments accessed: 193806
@@ -33,7 +61,6 @@ Analysis Code for scBaseCount
 * No. of SRA experiments: 59555
 * No. of SRA projects: TODO (`srx-to-project.py`)
 * No. of reads mapped via STAR: 13.3 trillion
-
 
 
 # Log
