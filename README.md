@@ -32,19 +32,23 @@ Analysis Code for scBaseCount
 * technology: 10x 5' v2
 * Organism: Home sapiens
 * CZI_collection_name: 'Asian immune diversity atlas'
+* CZI_collection_id: `ced320a1-29f3-47c1-a735-513c7084d508`
 * tissue: Blood
-
-### neocortex_atlas:
-* technology: 10x 3' v2
-* Organism: Human
-* CZI collection name: not a specific collection, but comes from BRAIN Initiative
-* tissue: neocortex
 
 ### marmoset_brain_cell_atlas:
 * technology: 10x3' v2
 * Organism: Callithrix jacchus
 * CZI collection name: A marmoset brain cell census reveals influence of developmental origin and functional class on neuronal identity
+* CZI collection id: `0fd39ad7-5d2d-41c2-bda0-c55bde614bd`
 * tissue: brain
+
+### neocortex_atlas:
+* technology: 10x 3' v2
+* Organism: Human
+* CZI collection name: not a specific collection, but comes from BRAIN Initiative
+  * Aka: `None`
+* tissue: neocortex
+
 
 
 ### SRAgent stats
