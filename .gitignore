@@ -16,6 +16,7 @@ ignore/
 .nextflow*
 screenlog.*
 figures/
+submitit/
 
 # Python
 __pycache__/
