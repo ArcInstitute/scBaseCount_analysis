@@ -17,6 +17,9 @@ ignore/
 screenlog.*
 figures/
 submitit/
+data/SRAgent_profiling/
+data/diseases/
+data/chris_data/
 
 # Python
 __pycache__/
