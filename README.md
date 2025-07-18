@@ -44,9 +44,9 @@ Analysis Code for scBaseCount
 
 ### neocortex_atlas:
 * technology: 10x 3' v2
-* Organism: Human
+* Organism: Home sapiens
 * CZI collection name: not a specific collection, but comes from BRAIN Initiative
-  * Aka: `None`
+  * aka: `None`
 * tissue: neocortex
 
 
