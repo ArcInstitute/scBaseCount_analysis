@@ -25,18 +25,18 @@ def parse_args():
                           argparse.RawDescriptionHelpFormatter):
         pass
     parser = argparse.ArgumentParser(
-        description="Update missing tissue_ontology_term_id values in SRX metadata database",
+        description="Get disease ontology for a set of diseases from CSV file",
         formatter_class=CustomFormatter,
         epilog="""
 Examples:
-  # Update missing tissue ontologies in test database (first 10 records)
-  python update_tissue_ontologies.py --tenant test --limit 10
+  # Process diseases with default 4 parallel processes
+  python get-disease-ontology.py diseases.csv
   
-  # Update all missing tissue ontologies in production database
-  python update_tissue_ontologies.py --tenant prod
+  # Process with 8 parallel processes and limit to 100 records
+  python get-disease-ontology.py diseases.csv --parallel 8 --limit 100
   
-  # Update with no delay between API calls (use cautiously)
-  python update_tissue_ontologies.py --tenant test --no-delay
+  # Force restart and use single process (no parallelism)
+  python get-disease-ontology.py diseases.csv --parallel 1 --force-restart
         """
     )
     parser.add_argument(
@@ -67,6 +67,12 @@ Examples:
         action="store_true",
         help="Force restart the workflow, regardless of checkpoint"
     )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=4,
+        help="Number of parallel processes to use"
+    )
     return parser.parse_args()
 
 async def get_disease_ontology(disease: str) -> List[str]:
@@ -77,6 +83,27 @@ async def get_disease_ontology(disease: str) -> List[str]:
     msg = f"Diseases: {disease}"
     input = {"messages": [HumanMessage(content=msg)]}
     return await workflow.ainvoke(input)
+
+async def process_single_disease(row: pd.Series, semaphore: asyncio.Semaphore) -> Dict[str, Any]:
+    """
+    Process a single disease record with semaphore for concurrency control.
+    """
+    async with semaphore:
+        try:
+            # Add timeout to prevent hanging
+            results = await asyncio.wait_for(get_disease_ontology(row["disease"]), timeout=300)  # 5 min timeout
+            ontology_ids = ";".join(results) if results else None
+        except asyncio.TimeoutError:
+            console.print(f"[yellow]Timeout processing {row['disease']}[/yellow]")
+            ontology_ids = None
+        except Exception as e:
+            console.print(f"[red]Error processing {row['disease']}:[/red] {e}")
+            ontology_ids = None
+        
+        # Add result to dict
+        result_row = row.to_dict()
+        result_row["disease_ontology_term_id"] = ontology_ids
+        return result_row
 
 def load_checkpoint(checkpoint_file: str) -> Optional[pd.DataFrame]:
     """Load checkpoint data if it exists."""
@@ -108,10 +135,11 @@ async def process_diseases(args):
             sys.exit(1)
     # remove duplcate rows for req_cols
     target_records = target_records[req_cols].drop_duplicates()
-
+    
     # limit to --limit
     if args.limit:
         target_records = target_records.head(args.limit)
+    console.print(f"[blue]Info:[/blue] {len(target_records)} records to process")
     
     # Check for existing checkpoint
     if args.force_restart:
@@ -137,10 +165,15 @@ async def process_diseases(args):
             console.print(f"[green]Final results written to {args.output_csv}[/green]")
         return
 
-    # get disease ontology with progress bar
+    # Get disease ontology with progress bar and parallel processing
     results_list = []
     if checkpoint_data is not None:
         results_list = checkpoint_data.to_dict('records')
+    
+    console.print(f"[blue]Info:[/blue] Using {args.parallel} parallel processes")
+    
+    # Create semaphore to limit concurrency
+    semaphore = asyncio.Semaphore(args.parallel)
     
     with Progress(
         SpinnerColumn(),
@@ -152,26 +185,48 @@ async def process_diseases(args):
     ) as progress:
         task = progress.add_task("Processing diseases...", total=len(target_records))
         
-        for idx, (_, row) in enumerate(target_records.iterrows()):
+        # Process records in chunks for checkpointing
+        chunk_size = args.checkpoint_freq
+        processed_count = 0
+        
+        for chunk_start in range(0, len(target_records), chunk_size):
+            chunk_end = min(chunk_start + chunk_size, len(target_records))
+            chunk_records = target_records.iloc[chunk_start:chunk_end]
+            
+            console.print(f"[blue]Processing chunk {chunk_start//chunk_size + 1}[/blue] (records {chunk_start+1}-{chunk_end})")
+            
+            # Process chunk in parallel
+            tasks = [
+                process_single_disease(row, semaphore)
+                for _, row in chunk_records.iterrows()
+            ]
+            
             try:
-                results = await get_disease_ontology(row["disease"])
-                ontology_ids = ";".join(results)
-            except Exception as e:
-                console.print(f"[red]Error:[/red] {e}")
-                ontology_ids = None
-            
-            # Add result to list
-            result_row = row.to_dict()
-            result_row["disease_ontology_term_id"] = ontology_ids
-            results_list.append(result_row)
-            
-            progress.advance(task)
-            
-            # Save checkpoint every N records
-            if (idx + 1) % args.checkpoint_freq == 0:
+                chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Add successful results to list
+                successful_results = 0
+                for result in chunk_results:
+                    if isinstance(result, Exception):
+                        console.print(f"[red]Error in chunk processing:[/red] {result}")
+                    else:
+                        results_list.append(result)
+                        successful_results += 1
+                
+                processed_count += len(chunk_records)
+                console.print(f"[green]Chunk completed:[/green] {successful_results}/{len(chunk_records)} successful")
+                
+                # Update progress
+                progress.update(task, advance=len(chunk_records))
+                
+                # Save checkpoint after each chunk
                 checkpoint_df = pd.DataFrame(results_list)
                 save_checkpoint(checkpoint_df, checkpoint_file)
-                console.print(f"[blue]Checkpoint saved[/blue] ({idx + 1} records processed)")
+                console.print(f"[blue]Checkpoint saved[/blue] ({len(results_list)} total records processed)")
+                
+            except Exception as e:
+                console.print(f"[red]Fatal error processing chunk:[/red] {e}")
+                break
     
     # Final save
     final_results = pd.DataFrame(results_list)
