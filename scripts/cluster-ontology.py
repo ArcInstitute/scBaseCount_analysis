@@ -10,7 +10,7 @@ import pandas as pd
 import networkx as nx
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 from sklearn.cluster import SpectralClustering
 from sklearn.metrics import silhouette_score
 import pronto
@@ -43,8 +43,10 @@ class MondoOntologyClusterer:
         self.abundance_path = Path(abundance_path)
         self.ontology = None
         self.graph = None
+        self.pruned_graph = None
         self.abundance_data = None
         self.node_weights = {}
+        self.nodes_with_abundance = set()
         
     def load_ontology(self) -> nx.DiGraph:
         """Load MONDO ontology from OWL file and convert to NetworkX graph.
@@ -123,14 +125,16 @@ class MondoOntologyClusterer:
         """
         logger.info("Creating node weights from abundance data")
         
-        # Create weights dictionary
+        # Create weights dictionary and track nodes with abundance
         self.node_weights = {}
+        self.nodes_with_abundance = set()
         matched_nodes = 0
         
         for _, row in self.abundance_data.iterrows():
             abundance = float(row['node_abundance'])        
             if row['node_id'] in self.graph.nodes():
                 self.node_weights[row['node_id']] = abundance
+                self.nodes_with_abundance.add(row['node_id'])
                 matched_nodes += 1
         
         # Set default weight for unmatched nodes
@@ -144,21 +148,110 @@ class MondoOntologyClusterer:
         
         return self.node_weights
     
-    def create_weighted_adjacency_matrix(self) -> np.ndarray:
-        """Create weighted adjacency matrix for clustering.
+    def prune_graph(self) -> nx.DiGraph:
+        """Remove nodes without abundance values and create direct edges to maintain connectivity.
         
         Returns:
-            Weighted adjacency matrix as numpy array
+            Pruned graph containing only nodes with abundance values
+        """
+        logger.info("Pruning graph to keep only nodes with abundance values")
+        
+        # Create new graph with only nodes that have abundance
+        self.pruned_graph = nx.DiGraph()
+        
+        # Add all nodes with abundance to the new graph
+        for node in self.nodes_with_abundance:
+            if node in self.graph.nodes():
+                self.pruned_graph.add_node(
+                    node,
+                    **self.graph.nodes[node]
+                )
+        
+        logger.info(f"Added {len(self.pruned_graph.nodes())} nodes with abundance values")
+        
+        # For each node with abundance, find all other nodes with abundance it can reach
+        # and create direct edges
+        nodes_to_process = list(self.nodes_with_abundance)
+        total_pairs = len(nodes_to_process) * (len(nodes_to_process) - 1) // 2
+        processed = 0
+        
+        logger.info(f"Finding connectivity between {len(nodes_to_process)} nodes...")
+        
+        for i, source in enumerate(nodes_to_process):
+            if source not in self.graph.nodes():
+                continue
+                
+            # Find all nodes with abundance reachable from this source
+            for target in nodes_to_process[i+1:]:
+                if target not in self.graph.nodes() or source == target:
+                    continue
+                
+                # Check if there's a path from source to target or target to source
+                path_exists = False
+                path_info = None
+                
+                try:
+                    if nx.has_path(self.graph, source, target):
+                        path = nx.shortest_path(self.graph, source, target)
+                        path_exists = True
+                        path_info = ('forward', path)
+                    elif nx.has_path(self.graph, target, source):
+                        path = nx.shortest_path(self.graph, target, source)
+                        path_exists = True
+                        path_info = ('reverse', path)
+                except:
+                    pass
+                
+                if path_exists and path_info:
+                    direction, path = path_info
+                    # Create edge in the pruned graph
+                    if direction == 'forward':
+                        self.pruned_graph.add_edge(source, target, 
+                                                 relationship="is_a_transitive",
+                                                 path_length=len(path)-1)
+                    else:
+                        self.pruned_graph.add_edge(target, source,
+                                                 relationship="is_a_transitive", 
+                                                 path_length=len(path)-1)
+                
+                processed += 1
+                if processed % 10000 == 0:
+                    logger.info(f"Processed {processed}/{total_pairs} node pairs...")
+        
+        # Also preserve direct edges between nodes with abundance
+        original_edges = 0
+        for u, v in self.graph.edges():
+            if u in self.nodes_with_abundance and v in self.nodes_with_abundance:
+                self.pruned_graph.add_edge(u, v, relationship="is_a")
+                original_edges += 1
+        
+        logger.info(f"Pruned graph has {self.pruned_graph.number_of_nodes()} nodes and {self.pruned_graph.number_of_edges()} edges")
+        logger.info(f"Preserved {original_edges} original direct edges")
+        logger.info(f"Created {self.pruned_graph.number_of_edges() - original_edges} transitive edges")
+        
+        return self.pruned_graph
+    
+    def create_weighted_adjacency_matrix(self, use_pruned: bool = False) -> Tuple[np.ndarray, List[str]]:
+        """Create weighted adjacency matrix for clustering.
+        
+        Args:
+            use_pruned: Whether to use the pruned graph or original graph
+            
+        Returns:
+            Weighted adjacency matrix as numpy array and node list
         """
         logger.info("Creating weighted adjacency matrix")
         
-        # Get largest connected component for clustering
-        if self.graph.is_directed():
-            largest_cc = max(nx.weakly_connected_components(self.graph), key=len)
-        else:
-            largest_cc = max(nx.connected_components(self.graph), key=len)
+        # Use pruned or original graph
+        graph = self.pruned_graph if use_pruned and self.pruned_graph is not None else self.graph
         
-        subgraph = self.graph.subgraph(largest_cc)
+        # Get largest connected component for clustering
+        if graph.is_directed():
+            largest_cc = max(nx.weakly_connected_components(graph), key=len)
+        else:
+            largest_cc = max(nx.connected_components(graph), key=len)
+        
+        subgraph = graph.subgraph(largest_cc)
         
         # Create node list and adjacency matrix
         nodes = list(subgraph.nodes())
@@ -179,19 +272,21 @@ class MondoOntologyClusterer:
         logger.info(f"Created {adj_matrix.shape} weighted adjacency matrix")
         return adj_matrix, nodes
     
-    def cluster_ontology(self, n_clusters: int, random_state: int = 42) -> Tuple[np.ndarray, List[str]]:
+    def cluster_ontology(self, n_clusters: int, random_state: int = 42, use_pruned: bool = False) -> Tuple[np.ndarray, List[str]]:
         """Perform spectral clustering on the weighted ontology graph.
         
         Args:
             n_clusters: Number of clusters to create
             random_state: Random state for reproducibility
+            use_pruned: Whether to use the pruned graph
+            
         Returns:
             Tuple of (cluster labels, node list)
         """
         logger.info(f"Performing spectral clustering with {n_clusters} clusters")
         
         # Create weighted adjacency matrix
-        adj_matrix, nodes = self.create_weighted_adjacency_matrix()
+        adj_matrix, nodes = self.create_weighted_adjacency_matrix(use_pruned)
         
         # Perform spectral clustering
         clusterer = SpectralClustering(
@@ -236,7 +331,7 @@ class MondoOntologyClusterer:
         results_df = pd.DataFrame(results)
         
         # Sort by cluster and abundance
-        results_df = results_df.sort_values(['cluster_id', 'abundance'], ascending=[True, False])
+        results_df = results_df.sort_values(['cluster_id', 'abundance'], ascending=[True, False]).reset_index(drop=True)
         
         # Save to file
         if output_path.endswith('.csv'):
@@ -282,6 +377,11 @@ def main():
         help="Output file path (default: mondo_clusters.tsv)"
     )
     parser.add_argument(
+        "--prune-nodes",
+        action="store_true",
+        help="Remove nodes without abundance values and create direct edges between remaining nodes"
+    )
+    parser.add_argument(
         "--random-state",
         type=int,
         default=42,
@@ -319,10 +419,15 @@ def main():
     clusterer.load_abundance_data()
     clusterer.create_node_weights()
     
+    # Prune graph if requested
+    if args.prune_nodes:
+        clusterer.prune_graph()
+    
     # Perform clustering
     cluster_labels, nodes = clusterer.cluster_ontology(
         args.n_clusters, 
-        args.random_state
+        args.random_state,
+        use_pruned=args.prune_nodes
     )
     
     # Save results
