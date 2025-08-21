@@ -14,7 +14,7 @@ Analysis Code for scBaseCount
 * Jan to March 2025 
 * [paper](https://www.biorxiv.org/content/10.1101/2025.02.27.640494v2)
 
-## `prod3`  + `prod4`
+## `prod3` + `prod4`
 
 * April to June 2025
 * Combined `prod3` and `prod4`
