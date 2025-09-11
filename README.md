@@ -24,7 +24,6 @@ Scripts (CLI utilities)
 - SRA helpers: `bioproject2srx.py`, `srx-to-project.py`, `srx-to-entrez-id.py`.
 - Ontology/labels: `get-disease-ontology.py`, `cluster-ontology.py`, `tissue_ontology_id2label.py`.
 - DB utilities: `ChrisData2SQL-DB.py`, `ChrisDataNoSRX2SQL-DB.py`, `sql_db_utils.py`, `db_utils.py`.
-- Analytics: `langsmith-run-summary.py` (LangSmith run metadata extraction).
 
 Pipeline
 --------
