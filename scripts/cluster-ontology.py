@@ -272,6 +272,118 @@ class MondoOntologyClusterer:
         logger.info(f"Created {adj_matrix.shape} weighted adjacency matrix")
         return adj_matrix, nodes
     
+    def find_cluster_roots(self, cluster_labels: np.ndarray, nodes: List[str], use_pruned: bool = False) -> Dict[int, List[str]]:
+        """Find root nodes for each cluster using lowest common ancestor approach.
+        
+        For each cluster, finds the most specific common ancestor(s) that cover
+        all or most nodes in the cluster.
+        
+        Args:
+            cluster_labels: Cluster assignment for each node
+            nodes: List of node IDs
+            use_pruned: Whether to use the pruned graph
+            
+        Returns:
+            Dictionary mapping cluster ID to list of root node IDs
+        """
+        logger.info("Finding lowest common ancestors for each cluster")
+        
+        # Use pruned or original graph
+        graph = self.pruned_graph if use_pruned and self.pruned_graph is not None else self.graph
+        
+        # Create mapping of node to cluster
+        node_to_cluster = {node: cluster for node, cluster in zip(nodes, cluster_labels)}
+        
+        # Find roots for each cluster
+        cluster_roots = {}
+        
+        for cluster_id in np.unique(cluster_labels):
+            # Get all nodes in this cluster
+            cluster_nodes = [node for node, cluster in node_to_cluster.items() if cluster == cluster_id]
+            
+            if not cluster_nodes:
+                cluster_roots[cluster_id] = []
+                continue
+            
+            # Find lowest common ancestors
+            lcas = self._find_lowest_common_ancestors(graph, cluster_nodes)
+            
+            # If no LCA found, find nodes with no parents in cluster
+            if not lcas:
+                # Fall back to finding root nodes (nodes with no predecessors in the cluster)
+                cluster_node_set = set(cluster_nodes)
+                lcas = []
+                for node in cluster_nodes:
+                    parents_in_cluster = [p for p in graph.predecessors(node) if p in cluster_node_set]
+                    if not parents_in_cluster:
+                        lcas.append(node)
+            
+            cluster_roots[cluster_id] = lcas
+            
+        logger.info(f"Found roots for {len(cluster_roots)} clusters")
+        return cluster_roots
+    
+    def _find_lowest_common_ancestors(self, graph: nx.DiGraph, nodes: List[str]) -> List[str]:
+        """Find the lowest common ancestor(s) of a set of nodes.
+        
+        Args:
+            graph: The directed graph
+            nodes: List of node IDs to find LCA for
+            
+        Returns:
+            List of LCA node IDs
+        """
+        if not nodes:
+            return []
+        
+        if len(nodes) == 1:
+            return nodes
+        
+        # Get all ancestors for each node
+        all_ancestors = []
+        for node in nodes:
+            if node in graph:
+                # Get ancestors including the node itself
+                ancestors = nx.ancestors(graph, node)
+                ancestors.add(node)
+                all_ancestors.append(ancestors)
+        
+        if not all_ancestors:
+            return []
+        
+        # Find common ancestors
+        common_ancestors = set.intersection(*all_ancestors)
+        
+        if not common_ancestors:
+            # No common ancestor, return empty
+            return []
+        
+        # Find the lowest (most specific) common ancestors
+        # These are common ancestors that have no descendants in common_ancestors
+        lowest_ancestors = []
+        for ancestor in common_ancestors:
+            # Check if this ancestor has any descendants in common_ancestors
+            descendants_in_common = any(
+                nx.has_path(graph, ancestor, other) and ancestor != other
+                for other in common_ancestors
+            )
+            if not descendants_in_common:
+                lowest_ancestors.append(ancestor)
+        
+        # If we have too many LCAs, try to find the most representative ones
+        if len(lowest_ancestors) > 3:
+            # Sort by number of cluster nodes they're ancestors of
+            ancestor_coverage = []
+            for ancestor in lowest_ancestors:
+                coverage = sum(1 for node in nodes if ancestor in nx.ancestors(graph, node) or ancestor == node)
+                ancestor_coverage.append((ancestor, coverage))
+            
+            # Sort by coverage and take top 3
+            ancestor_coverage.sort(key=lambda x: x[1], reverse=True)
+            lowest_ancestors = [anc for anc, _ in ancestor_coverage[:3]]
+        
+        return lowest_ancestors
+    
     def cluster_ontology(self, n_clusters: int, random_state: int = 42, use_pruned: bool = False) -> Tuple[np.ndarray, List[str]]:
         """Perform spectral clustering on the weighted ontology graph.
         
@@ -306,15 +418,28 @@ class MondoOntologyClusterer:
         logger.info(f"Clustering complete. Created {len(np.unique(cluster_labels))} clusters")
         return cluster_labels, nodes
     
-    def save_results(self, cluster_labels: np.ndarray, nodes: List[str], output_path: str):
+    def save_results(self, cluster_labels: np.ndarray, nodes: List[str], output_path: str, use_pruned: bool = False):
         """Save clustering results to file.
         
         Args:
             cluster_labels: Cluster assignment for each node
             nodes: List of node IDs
             output_path: Path to save results
+            use_pruned: Whether pruned graph was used
         """
         logger.info(f"Saving results to {output_path}")
+        
+        # Find root nodes for each cluster
+        cluster_roots = self.find_cluster_roots(cluster_labels, nodes, use_pruned)
+        
+        # Create mapping of cluster ID to root labels
+        cluster_root_labels = {}
+        for cluster_id, root_ids in cluster_roots.items():
+            root_names = []
+            for root_id in root_ids:
+                root_name = self.graph.nodes[root_id].get('name', root_id)
+                root_names.append(root_name)
+            cluster_root_labels[cluster_id] = ':'.join(root_names) if root_names else 'No root found'
         
         # Create results DataFrame
         results = []
@@ -324,8 +449,9 @@ class MondoOntologyClusterer:
                 'node_id': node_id,
                 'node_name': node_data.get('name', ''),
                 'cluster_id': int(cluster_id),
+                'cluster_root_labels': cluster_root_labels.get(cluster_id, 'Unknown'),
                 'abundance': self.node_weights.get(node_id, 1.0),
-                'definition': node_data.get('definition', '')[:100] + '...' if len(node_data.get('definition', '')) > 200 else node_data.get('definition', '')
+                'definition': node_data.get('definition', '')[:100] + '...' if len(node_data.get('definition', '')) > 100 else node_data.get('definition', '')
             })
         
         results_df = pd.DataFrame(results)
@@ -340,13 +466,23 @@ class MondoOntologyClusterer:
             results_df.to_csv(output_path, sep='\t', index=False)
         
         # Print cluster summary
-        cluster_summary = results_df.groupby('cluster_id').agg({
+        cluster_summary = results_df.groupby(['cluster_id', 'cluster_root_labels']).agg({
             'node_id': 'count',
             'abundance': ['sum', 'mean', 'std']
         }).round(3)
         
         print("\nCluster Summary:")
         print(cluster_summary)
+        
+        # Print root nodes summary
+        print("\nCluster Root Nodes:")
+        for cluster_id in sorted(cluster_roots.keys()):
+            root_ids = cluster_roots[cluster_id]
+            root_info = []
+            for root_id in root_ids:
+                root_name = self.graph.nodes[root_id].get('name', root_id)
+                root_info.append(f"{root_id} ({root_name})")
+            print(f"  Cluster {cluster_id}: {', '.join(root_info) if root_info else 'No roots'}")
         
         logger.info(f"Results saved to {output_path}")
 
@@ -431,7 +567,7 @@ def main():
     )
     
     # Save results
-    clusterer.save_results(cluster_labels, nodes, args.output)
+    clusterer.save_results(cluster_labels, nodes, args.output, use_pruned=args.prune_nodes)
     
     print(f"\nClustering complete! Results saved to {args.output}")
 

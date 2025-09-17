@@ -21,6 +21,7 @@ data/SRAgent_profiling/
 data/diseases/
 data/chris_data/
 jobs/
+*_local.md
 
 # Python
 __pycache__/
