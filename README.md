@@ -1,6 +1,8 @@
 Analysis Code for scBaseCount
 =============================
 
+[![DOI](https://zenodo.org/badge/952170557.svg)](https://doi.org/10.5281/zenodo.21539161)
+
 All code associated with the scBaseCount manuscript.
 
 * [scBaseCount manuscript](https://www.biorxiv.org/content/10.1101/2025.02.27.640494v2)
